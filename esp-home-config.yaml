@@ -1,0 +1,219 @@
+esphome:
+  name: esp
+  friendly_name: ESP
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "kRlkWEW86LnjgRNg+ZWkd3fFKLnhADq2/A96Uqesxkw="
+
+ota:
+  - platform: esphome
+    password: "ef266bd78895eb609facac8bd4690273"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Esp Fallback Hotspot"
+    password: "11111111"
+
+captive_portal:
+
+# Outputs for L298N Motor Controller
+output:
+  # PWM output for L298N ENA (Speed Control)
+  - platform: ledc
+    pin: GPIO21
+    id: motor_ena_pwm
+    frequency: 1000 Hz # Adjust frequency as needed for your motor, 1kHz is a common value
+
+  # GPIO outputs for L298N IN1 and IN2 (Direction Control)
+  - platform: gpio
+    pin: GPIO19
+    id: motor_in1
+
+  - platform: gpio
+    pin: GPIO22
+    id: motor_in2
+
+  # Placeholder for humidity - unchanged from your original config
+  - platform: gpio
+    pin: GPIO05  # humidity
+    id: gpio_05
+    inverted: True
+
+# Global variable - current_color (unused in this motor setup, but kept from original)
+globals:
+  - id: current_color
+    type: int
+    initial_value: '0'
+  # 'when_button_pressed' is no longer used by the modified button actions, can be removed if not needed elsewhere.
+  # - id: when_button_pressed
+  #   type: int
+  #   restore_value: no
+
+# Enable I2C Bus
+i2c:
+  sda: GPIO8
+  scl: GPIO9
+
+font:
+  - file: "gfonts://Roboto"
+    id: custom_font
+    size: 16
+
+# Display
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    id: oled_display
+    lambda: |-
+      // NeoPixel Status
+      if (id(neopixel_light).current_values.is_on()) {
+        it.print(0, 0, id(custom_font), "NeoPixel: On");
+      } else {
+        it.print(0, 0, id(custom_font), "NeoPixel: Off");
+      }
+
+      // Motor Status
+      if (id(rs550_motor).state) { // .state is true if fan (motor) is ON
+        it.print(0, 20, id(custom_font), "Motor: On");
+        // .speed is an int from 0 to 100 for template fan
+        it.printf(0, 40, id(custom_font), TextAlign::TOP_LEFT, "Speed: %d%%", id(rs550_motor).speed);
+      } else {
+        it.print(0, 20, id(custom_font), "Motor: Off");
+        it.printf(0, 40, id(custom_font), TextAlign::TOP_LEFT, "Speed: ---");
+      }
+
+# NeoPixel Configuration (Unchanged)
+light:
+  - platform: neopixelbus
+    variant: WS2812
+    type: GRB
+    pin: GPIO48
+    num_leds: 1
+    name: "NeoPixel Light"
+    id: neopixel_light
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - lambda: id(oled_display).update();
+    on_turn_off:
+      - lambda: id(oled_display).update();
+
+# Motor Control using Fan Component
+fan:
+  - platform: template
+    name: "RS550 Motor"
+    id: rs550_motor
+    optimistic: true # Assumes commands succeed immediately. Set to false for HA to confirm state.
+
+    # This lambda is called when the fan is turned ON from HA or web interface
+    turn_on_action:
+      - logger.log: "Motor turning ON"
+      # Set direction (e.g., Forward: IN1=HIGH, IN2=LOW)
+      # You can add a select switch or another button to change direction if needed
+      - output.turn_on: motor_in1
+      - output.turn_off: motor_in2
+      # Apply current speed. If speed is 0, PWM will be 0.
+      - output.set_level:
+          id: motor_ena_pwm
+          level: !lambda 'return id(rs550_motor).speed / 100.0;'
+      - lambda: id(oled_display).update();
+
+    # This lambda is called when the fan is turned OFF
+    turn_off_action:
+      - logger.log: "Motor turning OFF"
+      - output.turn_off: motor_ena_pwm  # Stop PWM
+      # Set IN1 and IN2 to LOW for motor brake (or float if preferred)
+      - output.turn_off: motor_in1
+      - output.turn_off: motor_in2
+      - lambda: id(oled_display).update();
+
+    # This lambda is called when speed is changed
+    # 'speed' parameter is an integer from 0 to 100
+    set_speed_action:
+      - logger.log: !lambda 'return "Motor speed set to: " + format_int(speed);'
+      - output.set_level:
+          id: motor_ena_pwm
+          level: !lambda 'return speed / 100.0;' # Convert 0-100 to 0.0-1.0 for PWM
+      # If fan is on and speed is set to 0, motor stops but fan entity remains "on"
+      # If fan is off and speed is set, it won't run until turned on.
+      # (ESPHome fan component often auto-turns-on if speed is set while off, check behavior)
+      - lambda: id(oled_display).update();
+
+    # No 'state_lambda' or 'get_speed_lambda' needed for optimistic: true typically,
+    # as the component assumes its state.
+
+web_server:
+  port: 80
+
+# Buttons
+binary_sensor:
+  # Button for NeoPixel light (Unchanged)
+  - platform: gpio
+    pin:
+      number: GPIO40
+      mode: INPUT_PULLUP
+    name: "Button_NEO"
+    on_press:
+      - light.toggle: neopixel_light
+
+  # Button to toggle Motor On/Off
+  - platform: gpio
+    pin:
+      number: GPIO39 # Was Button_LED
+      mode: INPUT_PULLUP
+    name: "Button_Motor_Toggle"
+    on_press:
+      - fan.toggle: rs550_motor
+
+  # Button to Increase Motor Speed
+  - platform: gpio
+    pin:
+      number: GPIO41 # Was On/Brighten
+      mode:
+        input: true
+        pullup: true
+      inverted: true # Assuming same button wiring as before
+    name: "Motor_Speed_Up"
+    on_press:
+      - logger.log: "Motor speed up pressed"
+      # fan.control allows setting speed and ensuring state is ON if speed > 0
+      - fan.control:
+          id: rs550_motor
+          # Increase speed by 10, max 100.
+          speed: !lambda 'return std::min(100, id(rs550_motor).speed + 10);'
+          # If increasing speed makes it > 0, ensure fan is ON.
+          # Otherwise, keep current fan state.
+          state: !lambda 'return (id(rs550_motor).speed + 10 > 0) ? true : id(rs550_motor).state;'
+
+
+  # Button to Decrease Motor Speed
+  - platform: gpio
+    pin:
+      number: GPIO38 # Was Off/Dim
+      mode:
+        input: true
+        pullup: true
+      inverted: true # Assuming same button wiring as before
+    name: "Motor_Speed_Down"
+    on_press:
+      - logger.log: "Motor speed down pressed"
+      - fan.control:
+          id: rs550_motor
+          # Decrease speed by 10, min 0.
+          speed: !lambda 'return std::max(0, id(rs550_motor).speed - 10);'
+          # State remains unchanged by speed decrease unless specific logic is added
+          # to turn off fan if speed hits 0. The toggle button handles explicit off.
