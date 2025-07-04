@@ -1,0 +1,123 @@
+esphome:
+  name: test-1
+  friendly_name: test 1
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "HikX8KqLtwpol9KbdwfBle+bB2LjepIyRTeVVnp90pI="
+
+ota:
+  - platform: esphome
+    password: "220458ed2b7162f2947156078a34a977"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "Test-1 Fallback Hotspot"
+    password: "Q2jBq761nSFP"
+
+captive_portal:
+
+output:
+  # GPIO pin for L298N IN1 - Direction control. Must be FloatOutput.
+  - platform: ledc
+    pin: GPIO18
+    id: fan_direction_in1
+
+  # GPIO pin for L298N IN2 - Direction control. Must be FloatOutput.
+  - platform: ledc
+    pin: GPIO19
+    id: fan_direction_in2
+    inverted: False
+
+  # PWM Output for L298N ENA (or ENB) - controls speed
+  - platform: ledc
+    pin: GPIO21
+    id: fan_speed_pwm
+    frequency: 1000 Hz
+
+fan:
+  - platform: hbridge
+    name: "Controllable Fan"
+    id: controllable_fan      # <<< MODIFIED: Added ID for local control
+    pin_a: fan_direction_in1
+    pin_b: fan_direction_in2
+    enable_pin: fan_speed_pwm
+    decay_mode: SLOW
+
+# <<< NEW SECTION: Binary sensors for push buttons >>>
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO25
+      inverted: true # Button connects to GND, so pressed is LOW. inverted=true means ON when pressed.
+      mode: INPUT_PULLUP
+    name: "Fan Speed Up Button"
+    id: fan_speed_up_button
+    on_press:
+      then:
+        - lambda: |-
+            // If fan is OFF (current speed is 0), turn it ON to 10% speed.
+            // The hbridge fan has speed_count: 100, so speed is 0-100.
+            if (!id(controllable_fan).state) {
+              ESP_LOGD("button", "Fan Speed Up: Fan is OFF. Turning ON with speed 10.");
+              auto call = id(controllable_fan).turn_on();
+              call.set_speed(10); // Set to 10% speed
+              call.perform();
+            } else { // Fan is ON
+              int current_speed = id(controllable_fan).speed;
+              int new_speed = current_speed + 10; // Increase speed by 10%
+              if (new_speed > 100) {
+                new_speed = 100; // Cap at 100%
+              }
+              ESP_LOGD("button", "Fan Speed Up: Fan is ON. Current speed: %d, New speed: %d", current_speed, new_speed);
+              auto call = id(controllable_fan).make_call();
+              call.set_speed(new_speed);
+              call.perform();
+            }
+
+  - platform: gpio
+    pin:
+      number: GPIO26
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "Fan Speed Down Button"
+    id: fan_speed_down_button
+    on_press:
+      then:
+        - lambda: |-
+            // Only act if fan is ON
+            if (id(controllable_fan).state) {
+              int current_speed = id(controllable_fan).speed;
+              int new_speed = current_speed - 10; // Decrease speed by 10%
+              ESP_LOGD("button", "Fan Speed Down: Fan is ON. Current speed: %d, New target speed: %d", current_speed, new_speed);
+              
+              // Setting speed to 0 or less will turn the fan off because FanState::state() is (speed != 0)
+              auto call = id(controllable_fan).make_call();
+              call.set_speed(new_speed); // If new_speed <=0, fan will turn off.
+              call.perform();
+            } else {
+              ESP_LOGD("button", "Fan Speed Down: Fan is OFF. No effect.");
+            }
+
+  - platform: gpio
+    pin:
+      number: GPIO27
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "Fan Toggle Button"
+    id: fan_toggle_button
+    on_press:
+      then:
+        - fan.toggle: controllable_fan
